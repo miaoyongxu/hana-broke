@@ -1,0 +1,44 @@
+{
+  "manifestVersion": 2,
+  "id": "hana-broke",
+  "name": "Hana Broke",
+  "version": "0.6.0",
+  "entry": "index.js",
+  "description": "每到周末和月末总有一段难熬的日子。这个 App 把你已经登录的 WorkBuddy / WorkBuddy AI 桌面账号，连同 OpenCode 的免费模型，一起接进 HanaAgent —— 不花一分钱，先把这个月撑过去。",
+  "capabilities": [
+    "app/process.spawn"
+  ],
+  "network": {
+    "allowedHosts": [
+      "127.0.0.1",
+      "localhost"
+    ],
+    "allowLocalhost": true,
+    "methods": [
+      "GET",
+      "POST",
+      "PUT",
+      "DELETE"
+    ],
+    "defaultTimeoutMs": 120000,
+    "maxResponseBytes": 8388608
+  },
+  "contributes": {
+    "cards": [
+      {
+        "id": "panel",
+        "title": "Hana Broke",
+        "description": "控制台：启动/停止桥接、账号与积分、模型档位与显隐、OpenCode 免费模型、桥接日志。",
+        "route": "/panel.html",
+        "cardForm": "structural",
+        "realization": "page",
+        "siteNavEntry": true,
+        "face": {
+          "image": "assets/cover.svg"
+        }
+      }
+    ]
+  },
+  "icon": "assets/icon.svg",
+  "minAppVersion": "1.1.0-beta"
+}

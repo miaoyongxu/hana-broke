@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hana Broke</title>
+  <!-- The `?v=` on every asset is the release version from manifest.json. Bump
+       it in the same commit as the version, or a WebView that holds the old
+       file in memory will keep painting the old UI after an update. -->
+  <link rel="stylesheet" href="./assets/panel.css?v=0.6.0">
+</head>
+<body data-hana-theme="inherit" data-surface="page">
+  <div id="root" data-surface="page"></div>
+  <script>
+    // The same panel.js also runs inside the bridge's own standalone console,
+    // where the shell injects this object with base "/admin" and a bearer.
+    window.__WORKBUDDY__ = { base: "/api", token: "" };
+  </script>
+  <!-- Palettes first, then the panel: the theme layer only sets custom
+       properties, so it has to land before the panel paints. -->
+  <script type="module" src="./assets/hana-theme.js?v=0.6.0"></script>
+  <script type="module" src="./assets/panel.js?v=0.6.0"></script>
+</body>
+</html>

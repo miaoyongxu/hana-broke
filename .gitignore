@@ -1,0 +1,9 @@
+# 依赖与构建产物
+node_modules/
+dist-extensions/
+
+# 日志与临时文件
+*.log
+*.tmp
+.DS_Store
+Thumbs.db

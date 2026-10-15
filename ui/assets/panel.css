@@ -1,0 +1,550 @@
+/* Hana Broke — console styling.
+
+   Two hosts, one sheet:
+
+   - **HanaAgent App page** — `hana-theme.js` mirrors the host's own custom
+     properties onto this document's root as inline styles, so every colour
+     below resolves to whatever theme the user is actually running. Inline
+     beats any rule here, which is why the defaults below are only fallbacks.
+   - **Standalone console** (the bridge's own `/panel`) — no host to follow, so
+     `prefers-color-scheme` decides.
+
+   Everything visual is a variable so the two paths cannot drift. */
+
+:root {
+  /* Fallbacks. The App page overwrites these from the host theme.
+
+     Only `--bg`, `--text` and the accent family are stated outright. The
+     surfaces are *derived* from them, so they can never disagree with the
+     background they sit on. That mattered: with the surfaces hard-coded, a
+     host that publishes `--bg` but not `--bg-card` produced a light page with
+     dark cards — two palettes on one screen, because one value came from the
+     host and the other from the fallback. */
+  --bg: #fbfbfd;
+  --text: #15171c;
+  --accent: #2f6df6;
+  --accent-text: #ffffff;
+  --ok: #16a34a;
+  --warn: #b45309;
+  --bad: #dc2626;
+
+  --panel: color-mix(in srgb, var(--bg) 96%, var(--text));
+  --panel-2: color-mix(in srgb, var(--bg) 91%, var(--text));
+  --border: color-mix(in srgb, var(--bg) 83%, var(--text));
+  --muted: color-mix(in srgb, var(--text) 62%, var(--bg));
+
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+
+  --radius: 12px;
+  --radius-sm: 8px;
+  --radius-pill: 999px;
+
+  /* Tints derived from the live palette, so they follow any theme. */
+  --hairline: color-mix(in srgb, var(--text) 9%, transparent);
+  --hover: color-mix(in srgb, var(--accent) 7%, transparent);
+  --focus: color-mix(in srgb, var(--accent) 28%, transparent);
+  --shadow-sm: 0 1px 2px color-mix(in srgb, #000 5%, transparent);
+  --shadow-md: 0 1px 2px color-mix(in srgb, #000 4%, transparent), 0 6px 18px color-mix(in srgb, #000 7%, transparent);
+}
+
+/* Standalone console only: with no host to follow, the OS decides the two
+   anchor colours and everything else falls out of them. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181d;
+    --text: #eceef2;
+    --accent: #6a9bff;
+    --ok: #4ade80;
+    --warn: #fbbf24;
+    --bad: #f87171;
+    --shadow-md: 0 1px 2px color-mix(in srgb, #000 30%, transparent), 0 6px 18px color-mix(in srgb, #000 24%, transparent);
+  }
+}
+
+/* Only what the host does not publish.
+
+   Every colour above is mirrored inline by `hana-theme.js` on the App page, and
+   a custom property set on an element beats the one it would inherit — so
+   redefining a mirrored colour here would win on <body> and silently pin the
+   console to this fallback palette instead of the theme the user is running.
+   That is exactly the bug this block used to cause. */
+:root[data-theme="light"],
+body[data-hana-theme="light"] {
+  --warn: #b45309;
+  --shadow-md: 0 1px 2px color-mix(in srgb, #000 4%, transparent), 0 6px 18px color-mix(in srgb, #000 7%, transparent);
+}
+
+:root[data-theme="dark"],
+body[data-hana-theme="dark"] {
+  --warn: #fbbf24;
+  --shadow-md: 0 1px 2px color-mix(in srgb, #000 30%, transparent), 0 6px 18px color-mix(in srgb, #000 24%, transparent);
+}
+
+* { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* The console fills whatever page it is given. It used to cap itself at 1000px
+   and centre, which left a wide window with two empty gutters and read as a
+   narrow column stranded in the middle of the screen. */
+#root {
+  width: 100%;
+  padding: 22px 22px 64px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* ── header ───────────────────────────────────────────── */
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-bottom: 2px;
+}
+
+header h1 {
+  font-size: 19px;
+  line-height: 1.3;
+  margin: 0;
+  font-weight: 650;
+  letter-spacing: -.01em;
+}
+
+header .spacer { flex: 1; }
+
+.sub {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+  margin: -6px 0 0;
+  max-width: 78ch;
+}
+
+/* A block of explanatory copy that sits between sections, not inside a card. */
+#root > .sub + .card,
+#root > .sub + section { margin-top: 0; }
+
+/* ── cards ────────────────────────────────────────────── */
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px 18px;
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow .18s ease, border-color .18s ease;
+}
+
+.card:hover { box-shadow: var(--shadow-md); }
+
+.card > h2 {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+  font-size: 13.5px;
+  font-weight: 640;
+  letter-spacing: -.005em;
+  margin: 0 0 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.card > h2 .hint {
+  font-weight: 400;
+  color: var(--muted);
+  font-size: 11.5px;
+  margin-left: 0;
+  line-height: 1.5;
+}
+
+/* Explanatory copy anywhere, not just beside a heading. `.block` breaks it onto
+   its own line so a switch row reads as one labelled control instead of a
+   sentence running into the button. */
+.hint {
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.hint.block { display: block; margin-top: 3px; }
+
+/* A preference row: label and explanation on the left, the control on the
+   right, the same visual rhythm as the key/value list below it. */
+.setting-row {
+  align-items: flex-start;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.setting-row > .grow { min-width: 0; font-size: 12.5px; }
+.setting-row button { flex: none; }
+
+/* ── layout helpers ───────────────────────────────────── */
+
+.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.row + .row { margin-top: 8px; }
+.row:empty { display: none; }
+.grow { flex: 1; }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+
+/* ── controls ─────────────────────────────────────────── */
+
+button {
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .14s ease, border-color .14s ease, color .14s ease, transform .06s ease;
+}
+
+button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent) 6%, var(--panel-2));
+}
+
+button:active:not(:disabled) { transform: translateY(.5px); }
+
+button:disabled { opacity: .45; cursor: default; }
+
+/* The on-state of a preference switch: quiet confirmation, not a call to
+   action — the primary colour stays reserved for the one thing that starts
+   something. */
+button.ok {
+  background: color-mix(in srgb, var(--ok) 14%, transparent);
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--border));
+  color: var(--ok);
+}
+
+button.ok:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ok) 20%, transparent);
+  border-color: color-mix(in srgb, var(--ok) 60%, var(--border));
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+  font-weight: 560;
+}
+
+button.primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 88%, #000);
+  border-color: color-mix(in srgb, var(--accent) 88%, #000);
+}
+
+button.danger:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--bad) 60%, var(--border));
+  background: color-mix(in srgb, var(--bad) 8%, var(--panel-2));
+  color: var(--bad);
+}
+
+:where(button, input, select, a):focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+input[type="text"] {
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  min-width: 168px;
+  transition: border-color .14s ease, background .14s ease;
+}
+
+input[type="text"]::placeholder { color: color-mix(in srgb, var(--muted) 75%, transparent); }
+
+input[type="text"]:hover { border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
+
+input[type="text"]:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--panel);
+  box-shadow: 0 0 0 3px var(--focus);
+}
+
+/* ── status pills ─────────────────────────────────────── */
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: var(--radius-pill);
+  padding: 1.5px 9px;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.6;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  background: color-mix(in srgb, var(--muted) 7%, transparent);
+  white-space: nowrap;
+}
+
+.pill::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: .85;
+  flex: none;
+}
+
+.pill.ok {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 38%, transparent);
+  background: color-mix(in srgb, var(--ok) 10%, transparent);
+}
+
+.pill.warn {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 38%, transparent);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+
+.pill.bad {
+  color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 38%, transparent);
+  background: color-mix(in srgb, var(--bad) 10%, transparent);
+}
+
+/* ── key/value lists ──────────────────────────────────── */
+
+.kv {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 5px 14px;
+  font-size: 12px;
+  margin: 0;
+}
+
+.kv dt {
+  color: var(--muted);
+  white-space: nowrap;
+  line-height: 1.75;
+}
+
+.kv dd {
+  margin: 0;
+  line-height: 1.75;
+  word-break: break-word;
+  min-width: 0;
+}
+
+/* ── tables ───────────────────────────────────────────── */
+
+.scroll {
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+}
+
+table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
+}
+
+th, td {
+  text-align: left;
+  padding: 8px 12px;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--hairline);
+}
+
+th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-weight: 560;
+  font-size: 11px;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+tbody tr:last-child > td { border-bottom: 0; }
+
+tbody tr { transition: background .12s ease; }
+
+tbody tr:hover > td { background: var(--hover); }
+
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+tr.hidden-model { opacity: .42; }
+
+tr.hidden-model:hover { opacity: .7; }
+
+/* ── log ──────────────────────────────────────────────── */
+
+pre.log {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+}
+
+/* ── messages ─────────────────────────────────────────── */
+
+.empty {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+  padding: 10px 0 2px;
+  margin: 0;
+}
+
+.error {
+  color: var(--bad);
+  font-size: 12px;
+  line-height: 1.65;
+  margin: 4px 0 0;
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  max-width: min(560px, calc(100vw - 40px));
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 9px 16px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  box-shadow: var(--shadow-md);
+  z-index: 9;
+  animation: toast-in .18s ease;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translate(-50%, 6px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+/* In-panel confirmation. Fixed to the bottom rather than placed in the flow:
+   it stays reachable at any scroll position, and it can never end up under the
+   host's own titlebar the way a top-of-page bar would. */
+.confirm {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: min(560px, calc(100vw - 40px));
+  padding: 11px 12px 11px 16px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  animation: toast-in .18s ease;
+}
+
+.confirm-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+/* ── misc ─────────────────────────────────────────────── */
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.credits { margin: 8px 0 0; padding: 0; list-style: none; font-size: 12px; }
+
+.credits li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 3px 0;
+  color: var(--muted);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.credits li:last-child { border-bottom: 0; }
+
+.credits li b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+  margin-top: 4px;
+}
+
+.bar > i { display: block; height: 100%; background: var(--accent); transition: width .3s ease; }
+
+/* Scrollbars, where the engine allows it. */
+* { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--text) 22%, transparent) transparent; }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+
+::-webkit-scrollbar-track { background: transparent; }
+
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text) 20%, transparent);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--text) 34%, transparent); background-clip: padding-box; }
+
+@media (max-width: 640px) {
+  #root { padding: 16px 14px 48px; }
+  .kv { grid-template-columns: 1fr; gap: 1px; }
+  .kv dt { font-size: 11px; }
+  .kv dd { margin-bottom: 6px; }
+}

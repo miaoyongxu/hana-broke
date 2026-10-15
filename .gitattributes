@@ -1,0 +1,11 @@
+# 保持 LF，避免 Windows 上检出时被改成 CRLF —— 发布包要求与工作树逐字节一致
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
