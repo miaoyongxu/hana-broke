@@ -28,9 +28,9 @@ magpie project's community plugin library, installed under `plugins/` and loaded
 
   | Package | Version | Licence |
   | --- | --- | --- |
-  | `@magpie-community/opencode-qoder-auth` | 0.2.18 | MIT |
-  | `@magpie-community/opencode-workbuddy-auth` | 0.1.24 | MIT |
-  | `@magpie-community/opencode-zen-free-auth` | 0.1.11 | MIT |
+  | `@magpie-community/opencode-qoder-auth` | 0.2.25 | MIT |
+  | `@magpie-community/opencode-workbuddy-auth` | 0.1.28 | MIT |
+  | `@magpie-community/opencode-zen-free-auth` | 0.1.13 | MIT |
 
   They are shipped as-is inside the App bundle and called through their exported hooks. Any
   modification to them would be this repository's responsibility, and is avoided: a fix
@@ -79,3 +79,4 @@ WorkBuddy, WorkBuddy AI, CodeBuddy, Qoder, DeepSeek Harness and HanaAgent are th
 property of their respective owners. This project is an unofficial
 interoperability tool and is not affiliated with, endorsed by, or supported by
 any of them.
+
