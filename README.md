@@ -301,6 +301,7 @@ anything.
 ## Tests
 
 ```bash
+node scripts/check-bundled-plugins.mjs        # the bundled plugin rules actually fire
 node scripts/test-bridge-auth.mjs              # the authorization boundary, against a real bridge
 node scripts/test-plugin-host.mjs              # the host, against the real plugins
 node scripts/test-plugin-host.mjs --live       # adds one real inference (needs no account)
@@ -316,6 +317,8 @@ other direction — a correct client still gets `/admin/status`, `/admin/provide
 `/healthz` — and that no response anywhere contains the token. It uses `node:http` rather
 than `fetch` on purpose: `fetch` drops a custom `Host` header, so a rebinding test written
 with it would pass while proving nothing.
+
+`check-bundled-plugins.mjs` is the guard against shipping a plugin that is worse than its version number. It feeds each bundled rule the sentence it claims to rewrite and requires the *words* to change — not just the bytes: a replacement that differs only in punctuation is a dead rule that still looks alive in the source. `opencode-workbuddy-auth` 0.1.28 ships exactly such a rule for the DeepSeek Harness opener (replacement == match), and one lookbehind that must *not* fire on `The Codex CLI …`, so both directions are asserted.
 
 `test-plugin-host.mjs` installs nothing and needs no account: it drives the plugins already in
 `plugins/`, and its live half uses `zen-free`, whose credential is the literal string
@@ -397,3 +400,7 @@ surface. `bridge.mjs --print-token` prints the token for a local script.
   `--data-dir` will generate its own token and the App will be refused.
 - The theme layer only fills in the variables the host publishes. The panel's own `--warn` and
   `--accent-text` keep the panel's values.
+
+
+
+
