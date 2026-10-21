@@ -7,3 +7,10 @@ dist-extensions/
 *.tmp
 .DS_Store
 Thumbs.db
+
+# 本地探针：临时拆包、试验数据、协议向量
+_wbprobe/
+_bridgeprobe/
+_hanaprobe/
+test/qoder-fixtures/
+

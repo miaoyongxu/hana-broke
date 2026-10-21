@@ -17,6 +17,11 @@
  *    (loopback + `network.allowLocalhost` in the manifest). The page in
  *    `ui/panel.html` calls these routes through `hana.api.fetch`, so the
  *    bridge's bearer never has to reach the browser.
+ * 3. **The bearer stays on the App side of that proxy.** It is read from the
+ *    token file the bridge created and attached here, which is the only place
+ *    it is used. Nothing in `ui/` or in a response body carries it, so a page
+ *    cannot leak what it was never given, and rotating the file is all that
+ *    invalidating a leaked value takes.
  *
  * The bridge is started through a hidden shell that clears `NODE_OPTIONS`; see
  * {@link shellLaunch} for why that is load-bearing rather than cosmetic. Its console output is captured into
@@ -50,8 +55,26 @@ const BRIDGE_SCRIPT = join(APP_DIR, "bridge.mjs");
 const LAUNCH_SCRIPT = join(APP_DIR, "bridge-launch.mjs");
 
 const BRIDGE_HOST = "127.0.0.1";
-const BRIDGE_PORT = Number(process.env["WORKBUDDY_BRIDGE_PORT"] ?? 8788) || 8788;
+// 8789, not 8788: another service on this machine already holds 8788, and never 3425 —
+// that is magpie's gateway, and both may run at once.
+const BRIDGE_PORT = Number(process.env["HANABROKE_PORT"] ?? 8789) || 8789;
 const BRIDGE_ORIGIN = `http://${BRIDGE_HOST}:${BRIDGE_PORT}`;
+
+/**
+ * The bearer this App and its bridge share.
+ *
+ * Held in the App's own data directory rather than passed to the bridge on the
+ * command line: an argument is visible to every process that can list the
+ * process table, which would put it back on the same footing as the anonymous
+ * bridge this replaces. The bridge reads the same file (`bridge-token`) because
+ * both resolve `<hanaHome>/plugin-data/hana-broke` — the App passes it
+ * `--data-dir`, so there is exactly one copy and one place to rotate.
+ *
+ * Consequently this is *not* `bridgeArgv`'s job. Reading it here and adding it
+ * to our own requests is: the proxy is the only caller that can be trusted to
+ * carry it, and it stays on this side of the IPC boundary.
+ */
+const TOKEN_FILE = "bridge-token";
 
 /** A ping is a liveness question, not a data question: keep it short. */
 const PING_TIMEOUT_MS = 8_000;
@@ -394,16 +417,22 @@ class Bridge {
   /**
    * Call one bridge admin route.
    *
-   * The port and bearer are fixed rather than read from the bridge's
-   * `endpoint.json`: that file lives under `plugin-data/`, outside this App's
-   * read roots, and the bridge's own defaults are exactly this pair.
+   * The port is fixed rather than read from the bridge's `endpoint.json`: the
+   * bridge's own defaults are exactly this pair, and the file is not worth a
+   * second source of truth. The bearer is not fixed — it is read from the token
+   * file the bridge created, because there is deliberately no well-known value.
    *
    * @returns {Promise<{ok: boolean, running: boolean, status?: number, body?: any, error?: string}>}
    */
   async call(path, options = {}) {
     const query = options.query && Object.keys(options.query).length > 0 ? `?${new URLSearchParams(options.query).toString()}` : "";
+    const token = this.readToken();
     const headers = {};
     if (options.body !== undefined) headers["content-type"] = "application/json";
+    // Sent even when the file is unreadable: the bridge then answers 401, which
+    // the page shows as "not authorized" rather than as a network failure —
+    // a materially different thing to fix.
+    if (token !== undefined) headers.authorization = `Bearer ${token}`;
     try {
       const response = await this.fetch(`${BRIDGE_ORIGIN}/admin${path}${query}`, {
         method: options.method ?? "GET",
@@ -424,6 +453,22 @@ class Bridge {
       // A refused connection is the normal "not running" case, not an error
       // worth a stack trace on the page.
       return { ok: false, running: false, error: String(error?.message ?? error) };
+    }
+  }
+
+  /**
+   * The shared bearer, or `undefined` before the bridge has ever run.
+   *
+   * Read per call rather than cached: the bridge generates the file on its first
+   * start, which can happen long after this App loaded, and a cache would keep
+   * answering 401 until a reload.
+   */
+  readToken() {
+    try {
+      const token = readFileSync(join(this.dataDir, TOKEN_FILE), "utf8").trim();
+      return token === "" ? undefined : token;
+    } catch {
+      return undefined;
     }
   }
 
@@ -578,7 +623,9 @@ export default defineApp(async (sdk) => {
   const hanaHome = dirname(dirname(sdk.dataDir));
   const bridge = new Bridge({
     hanaHome,
-    dataDir: join(hanaHome, "plugin-data", "workbuddy-bridge"),
+    // A new directory on purpose: the old one holds the previous generation's account
+    // profiles and probe caches, and none of them mean anything to the plugin host.
+    dataDir: join(hanaHome, "plugin-data", "hana-broke"),
     appDataDir: sdk.dataDir,
     fetch: (url, init) => sdk.network.fetch(url, init),
     note: (message) => void sdk.logger.info(message),
@@ -666,23 +713,33 @@ export default defineApp(async (sdk) => {
     app.get("/api/bridge/diagnostics", (c) => c.json(bridge.diagnostics()));
     app.get("/api/bridge/selfcheck", async (c) => c.json(await bridge.selfCheck()));
 
-    app.get("/api/status", (c) => forward(c, "/status", { timeoutMs: 30_000 }));
-    app.get("/api/credits", (c) => forward(c, "/credits", { timeoutMs: 60_000 }));
-    app.get("/api/models", (c) => forward(c, "/models", { timeoutMs: 90_000 }));
-    app.post("/api/refresh", (c) => forward(c, "/refresh", { method: "POST", timeoutMs: 120_000 }));
-    app.get("/api/visibility", (c) => forward(c, "/visibility", { timeoutMs: 30_000 }));
-    app.put("/api/visibility", (c) => forward(c, "/visibility", { method: "PUT", body: true, timeoutMs: 120_000 }));
-    app.get("/api/profiles", (c) => forward(c, "/profiles", { timeoutMs: 60_000 }));
-    app.post("/api/profiles", (c) => forward(c, "/profiles", { method: "POST", body: true, timeoutMs: 60_000 }));
-    app.post("/api/profiles/activate", (c) => forward(c, "/profiles/activate", { method: "POST", body: true, timeoutMs: 120_000 }));
-    app.delete("/api/profiles", (c) => forward(c, "/profiles", { method: "DELETE", body: true, timeoutMs: 30_000 }));
-    app.post("/api/probe", (c) => forward(c, "/probe", { method: "POST", body: true, timeoutMs: 180_000 }));
-    // OpenCode free models: reachability per model. `?refresh=1` re-measures every
-    // model, which is slow by design (each probe is a real request), hence the
-    // generous budget; the cached answer returns immediately.
-    app.get("/api/opencode", (c) => forward(c, "/opencode", { timeoutMs: 600_000 }));
-    app.put("/api/opencode/visibility", (c) => forward(c, "/opencode/visibility", { method: "PUT", body: true, timeoutMs: 300_000 }));
+    app.get("/api/status", (c) => forward(c, "/status", { timeoutMs: 60_000 }));
+    app.get("/api/providers", (c) => forward(c, "/providers", { timeoutMs: 120_000 }));
+    app.post("/api/sync", (c) => forward(c, "/sync", { method: "POST", timeoutMs: 180_000 }));
     app.get("/api/log", (c) => forward(c, "/log", { timeoutMs: 15_000 }));
+
+    /**
+     * One provider's routes, forwarded by id.
+     *
+     * The panel talks to `/api/providers/<id>...` in the App and `/admin/providers/<id>...`
+     * on the standalone console, so the shape is identical apart from the prefix — which
+     * is what lets one `panel.js` serve both hosts.
+     */
+    const providerRoute = (suffix, options) =>
+      async (c) => {
+        const id = c.req.param("id");
+        if (typeof id !== "string" || !/^[a-z0-9-]+$/.test(id)) {
+          return c.json({ ok: false, error: "非法的供应商 id" }, 400);
+        }
+        return forward(c, `/providers/${id}${suffix}`, options);
+      };
+
+    app.get("/api/providers/:id", providerRoute("", { timeoutMs: 120_000 }));
+    app.post("/api/providers/:id/signin", providerRoute("/signin", { method: "POST", body: true, timeoutMs: 60_000 }));
+    app.delete("/api/providers/:id/signin", providerRoute("/signin", { method: "DELETE", timeoutMs: 30_000 }));
+    app.post("/api/providers/:id/signout", providerRoute("/signout", { method: "POST", timeoutMs: 30_000 }));
+    app.put("/api/providers/:id/visibility", providerRoute("/visibility", { method: "PUT", body: true, timeoutMs: 180_000 }));
+    app.post("/api/providers/:id/refresh", providerRoute("/refresh", { method: "POST", timeoutMs: 120_000 }));
 
     app.get("/health", (c) => c.json({ ok: true, app: "hana-broke" }));
   });

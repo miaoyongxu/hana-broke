@@ -1,0 +1,11 @@
+{
+  "name": "plugins-bundle",
+  "private": true,
+  "type": "module",
+  "description": "Provider adapters, installed as-is from the magpie community plugin library (MIT). See ../THIRD_PARTY_NOTICES.md.",
+  "dependencies": {
+    "@magpie-community/opencode-qoder-auth": "0.2.18",
+    "@magpie-community/opencode-workbuddy-auth": "0.1.24",
+    "@magpie-community/opencode-zen-free-auth": "0.1.11"
+  }
+}

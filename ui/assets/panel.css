@@ -548,3 +548,44 @@ pre.log {
   .kv dt { font-size: 11px; }
   .kv dd { margin-bottom: 6px; }
 }
+
+/* ———— provider plugins ————
+
+   The card layout above is unchanged; these are the pieces the plugin view added and
+   magpie's Providers page made obviously necessary: a roster that reads as a list rather
+   than a paragraph, a sign-in field, and a link that can be selected without dragging. */
+
+.providers { display: flex; flex-direction: column; gap: 14px; }
+
+/* A model row is a table, not prose: the id stays monospaced and the switch hugs the end,
+   so a roster of twenty is scannable rather than a wall of text. */
+.row.model { display: grid; grid-template-columns: auto minmax(10ch, 22ch) 1fr auto; gap: 10px; align-items: center; }
+.row.model code { font-size: 0.92em; }
+.row.model .sub { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* A sign-in that is waiting on a person: the URL is the only thing that matters, so it
+   gets a line of its own and can be selected. */
+.signin-live {
+  margin: 10px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.12));
+  border-radius: 10px;
+  background: var(--bg-card, transparent);
+}
+.signin-live .url {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.86em;
+  word-break: break-all;
+  user-select: all;
+  color: var(--accent);
+}
+
+.method { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border, rgba(0, 0, 0, 0.12)); }
+.prompts { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.field { display: flex; flex-direction: column; gap: 4px; font-size: 0.9em; }
+.field input { padding: 7px 9px; border-radius: 8px; border: 1px solid var(--border, rgba(0, 0, 0, 0.15)); background: var(--bg-input, transparent); color: inherit; font: inherit; }
+
+@media (max-width: 720px) {
+  .row.model { grid-template-columns: auto 1fr auto; }
+  .row.model .sub { grid-column: 1 / -1; }
+}

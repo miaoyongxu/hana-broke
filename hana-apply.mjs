@@ -96,7 +96,15 @@ export async function providerRegistered(id, options = {}) {
  * to the provider-plugin file format itself, so the written file and the one
  * the bridge generated stay equivalent.
  *
- * @param {{ id: string, displayName: string, baseUrl: string, models: object[] }} provider
+ * `api_key` and `auth_type` are part of the patch because they are what make
+ * the bridge's own check real. HanaAgent treats a loopback `base_url` as
+ * needing no key, so a provider that declared `none` would be called without an
+ * `Authorization` header — the bridge would then have to accept anonymous
+ * requests from anything else on the machine, which is precisely the defect
+ * this release fixes. Sending `api-key` + the shared bearer makes HanaAgent
+ * attach `Authorization: Bearer <token>` like any other keyed provider.
+ *
+ * @param {{ id: string, displayName: string, baseUrl: string, models: object[], apiKey: string }} provider
  * @param {{ hanaHome?: string }} [options]
  * @returns {Promise<{ applied: boolean, reason?: string, registered?: boolean }>}
  */
@@ -116,9 +124,10 @@ export async function applyProvider(provider, options = {}) {
 	const patch = {
 		[provider.id]: {
 			display_name: provider.displayName,
-			auth_type: "none",
+			auth_type: provider.apiKey === undefined ? "none" : "api-key",
 			base_url: provider.baseUrl,
 			api: "openai-completions",
+			...(provider.apiKey === undefined ? {} : { api_key: provider.apiKey }),
 			// Kept in the patch so the marker survives the server's own rewrite
 			// of the provider-plugin file.
 			...(provider.description === undefined ? {} : { description: provider.description }),

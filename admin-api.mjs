@@ -1,26 +1,21 @@
 /**
- * The bridge's own HTTP surface, used by the HanaAgent settings page.
+ * The bridge's operator surface, used by the console and by the HanaAgent App page.
  *
- * Everything here is deliberately separate from the OpenAI-compatible surface
- * under `/<variant>/v1`: that one is a model endpoint, this one is an operator
- * console (account, credits, model roster, visibility, probes). It shares the
- * loopback bind and the optional bearer of the main server, so setting
- * `--token` protects both.
+ * Separate from the OpenAI-compatible surface under `/<provider>/v1`: that one is a model
+ * endpoint, this one is a console (who is signed in, what the vendor listed, which models
+ * are shown, one sign-in at a time). It shares the loopback bind and the optional bearer
+ * of the main server, so `--token` protects both.
  *
- * Two rules shape the endpoints:
- *
- * - **Credits cost a real request.** WorkBuddy answers the balance from a
- *   billing endpoint, so `GET /admin/status` never touches it; only
- *   `GET /admin/credits` does, and the UI labels it as such.
- * - **Probes cost real requests too.** They are opt-in per call
- *   (`confirm: true`), never part of a status read.
+ * Sign-in is the one operation that is stateful and slow, so it is modelled as a job
+ * rather than a request: `POST /admin/providers/<id>/signin` starts it and answers with a
+ * URL, `GET .../signin` reports where it got to. A browser flow waits for a person, and a
+ * request that simply blocked for two minutes would look like a hang — and could not be
+ * polled for the URL it is waiting on.
  *
  * @module hana-broke/admin-api
  */
 
-import { readFileSync } from "node:fs";
-
-import { RATE_SEPARATOR } from "./hana-providers.mjs";
+import { randomUUID } from "node:crypto";
 
 /** JSON response helper (mirrors the bridge's own, kept local to stay standalone). */
 function sendJson(res, status, body) {
@@ -56,7 +51,6 @@ function readJsonBody(req, limit = 1_000_000) {
 				const parsed = JSON.parse(text);
 				resolve(parsed !== null && typeof parsed === "object" ? parsed : {});
 			} catch (error) {
-				// A malformed body is the caller's mistake, so 400 — not 500.
 				reject(Object.assign(new Error(`invalid JSON body: ${String(error)}`), { status: 400 }));
 			}
 		});
@@ -64,135 +58,76 @@ function readJsonBody(req, limit = 1_000_000) {
 	});
 }
 
-/** A short, non-secret description of a credential. */
-function describeCredential(credential) {
-	return {
-		uid: credential.uid ?? "",
-		domain: credential.domain ?? "",
-		...(credential.nickname === undefined ? {} : { nickname: credential.nickname }),
-		...(credential.enterpriseId === undefined || credential.enterpriseId === "" ? {} : { enterpriseId: credential.enterpriseId }),
-		expiresAt: new Date(credential.expiresAtMs).toISOString(),
-		...(credential.refreshExpiresAtMs === undefined ? {} : { refreshExpiresAt: new Date(credential.refreshExpiresAtMs).toISOString() }),
-		source: credential.source ?? "unknown",
-	};
-}
-
 /**
  * Build the admin request handler.
  *
  * @param {object} deps
- * @param {object} deps.chunk loaded upstream module
- * @param {object[]} deps.runtimes per-variant runtimes from the bridge
- * @param {(runtime: object) => object} deps.storeFor credential store honouring the active profile
- * @param {(runtime: object) => object[]} deps.listProfiles profiles of one variant
- * @param {(runtime: object, id: string) => Promise<object>} deps.describeProfile read one profile back (never refreshes)
- * @param {(runtime: object, name: string, sourcePath?: string) => Promise<object>} deps.captureProfile snapshot the live desktop login
- * @param {(runtime: object) => string|undefined} deps.liveAuthPath the desktop app's own auth file
- * @param {(runtime: object, id?: string) => string|undefined} deps.activateProfile select a profile
- * @param {(runtime: object, id: string) => boolean} deps.deleteProfile remove a profile
- * @param {() => Promise<object[]>} deps.syncNow re-run catalog sync + registration
- * @param {(runtime: object, force: boolean) => Promise<{models: object[], error?: string}>} deps.catalogFor
- * @param {() => Map<string, object>} deps.quotaBlocks live quota short-circuit state
- * @param {(runtime: object, info: object) => string} deps.displaySuffix picker suffix for one model
- * @param {object} deps.options bridge options (port, host, dataDir, logFile)
- * @param {string} deps.pluginLib plugin lib path, for the status header
+ * @param {import("./plugin-host.mjs").ProviderPlugin[]} deps.providers loaded plugins
+ * @param {object} deps.store the plugin credential store
+ * @param {object} deps.options bridge options
  * @param {(req: object) => boolean} deps.bearerOk the bridge's own bearer check
- * @param {() => void} deps.shutdown stop the bridge gracefully (settings page "stop" button)
+ * @param {() => Promise<object[]>} deps.syncNow re-run catalog sync + registration
+ * @param {(provider: object, force: boolean) => Promise<object>} deps.catalogFor one provider's models
+ * @param {() => void} deps.shutdown stop the bridge gracefully
  * @param {(message: string) => void} deps.log
  * @param {(message: string) => void} deps.warn
- * @returns {(req: object, res: object, url: URL) => Promise<boolean>} true when handled
  */
 export function createAdminApi(deps) {
-	const { chunk, runtimes, storeFor, syncNow, catalogFor, displaySuffix, options, pluginLib, bearerOk, log, warn, opencode } = deps;
+	const { providers, store, options, bearerOk, syncNow, catalogFor, shutdown, log, warn } = deps;
 
-	/** Model list for one variant, with the picker suffix and hidden flag. */
-	async function modelRows(runtime, force) {
-		const catalog = await catalogFor(runtime, force);
-		const store = storeFor(runtime);
-		let accountKey;
-		try {
-			accountKey = deps.accountKeyOf(await store.resolve());
-		} catch {
-			accountKey = undefined;
-		}
-		const hidden = new Set(accountKey === undefined ? [] : deps.hiddenModelsFor(runtime, accountKey));
-		return {
-			error: catalog.error,
-			models: catalog.models.map((info) => {
-				const live = chunk.modelWithCurrentPromotion(info);
-				const suffix = displaySuffix(live) ?? "";
-				const name = typeof info.name === "string" && info.name !== "" ? info.name : info.id;
-				return {
-					id: info.id,
-					name,
-					suffix,
-					// The picker's own spelling, so the page never has to know the
-					// separator HanaAgent uses.
-					displayName: suffix === "" ? name : `${name}${RATE_SEPARATOR}${suffix}`,
-					rate: chunk.normalizeCredits(live?.billing?.credits) ?? null,
-					badges: live?.billing?.badges ?? [],
-					free: live?.billing?.free === true,
-					contextWindow: info.contextWindow ?? null,
-					maxTokens: info.maxTokens ?? null,
-					supportsImages: info.supportsImages === true,
-					declaredEfforts: info.supportedEfforts ?? [],
-					defaultEffort: info.defaultEffort ?? null,
-					hidden: hidden.has(info.id),
-				};
-			}),
+	/**
+	 * Sign-ins in flight, keyed by provider id.
+	 *
+	 * One per provider: two device flows for the same account would race for the same
+	 * credential slot, and the second would overwrite the first mid-poll.
+	 */
+	const signIns = new Map();
+
+	const providerOf = (id) => {
+		const found = providers.find((candidate) => candidate.id === id);
+		if (found === undefined) throw Object.assign(new Error(`unknown provider: ${String(id)}`), { status: 404 });
+		return found;
+	};
+
+	/** A provider's row: who it is, whether signed in, what it listed. */
+	async function providerRow(provider, { force = false } = {}) {
+		const row = {
+			...provider.describe(),
+			baseUrl: `http://${options.host}:${options.port}/${provider.id}/v1`,
+			signIn: signIns.has(provider.id) ? describeSignIn(signIns.get(provider.id)) : null,
 		};
-	}
-
-	async function variantStatus(runtime) {
-		const store = storeFor(runtime);
-		const status = await store.status();
-		const blocked = [];
-		for (const [key, block] of deps.quotaBlocks()) {
-			const [variantId, model] = key.split("\u0000");
-			if (variantId !== runtime.id) continue;
-			blocked.push({ model, resetsAt: block.resetLabel });
+		if (!provider.signedIn()) {
+			return { ...row, models: [], listError: "还没有登录" };
 		}
-		let account;
 		try {
-			account = describeCredential(await store.resolve());
+			const catalog = await catalogFor(provider, force);
+			const hidden = new Set(provider.hiddenIds());
+			return {
+				...row,
+				models: catalog.models.map((model) => ({
+					...model,
+					hidden: hidden.has(model.id),
+				})),
+				modelCount: catalog.models.length,
+				listed: catalog.models.length,
+				shown: catalog.models.filter((model) => !hidden.has(model.id)).length,
+				fellBack: catalog.fellBack === true,
+				listError: catalog.listError ?? null,
+			};
 		} catch (error) {
-			account = { error: String(error) };
-		}
-		return {
-			id: runtime.id,
-			displayName: runtime.displayName,
-			route: runtime.route,
-			providerId: runtime.providerId,
-			baseUrl: runtime.baseUrl,
-			state: status.state,
-			...(status.reason === undefined ? {} : { reason: status.reason }),
-			account,
-			activeProfile: runtime.activeProfileId ?? null,
-			modelCount: runtime.catalog.models.length,
-			catalogError: runtime.catalog.error ?? null,
-			...(runtime.lastError === undefined ? {} : { lastError: runtime.lastError }),
-			...(runtime.lastSuccessAt === undefined ? {} : { lastSuccessAt: runtime.lastSuccessAt }),
-			...(blocked.length === 0 ? {} : { quotaBlocked: blocked }),
-		};
-	}
-
-	/** Fetch the balance for one variant; this is a real billing request. */
-	async function creditsFor(runtime) {
-		const store = storeFor(runtime);
-		try {
-			const credential = await store.resolve();
-			const credits = await runtime.client.fetchCredits(credential);
-			return { id: runtime.id, ok: true, credits };
-		} catch (error) {
-			return { id: runtime.id, ok: false, error: String(error) };
+			return { ...row, models: [], listError: String(error?.message ?? error) };
 		}
 	}
 
-	function runtimeOf(id) {
-		const runtime = runtimes.find((candidate) => candidate.id === id);
-		if (runtime === undefined) throw Object.assign(new Error(`unknown variant: ${String(id)}`), { status: 404 });
-		return runtime;
-	}
+	/** What a caller is told about a sign-in in progress. */
+	const describeSignIn = (job) => ({
+		id: job.id,
+		state: job.state,
+		url: job.url ?? null,
+		instructions: job.instructions ?? null,
+		error: job.error ?? null,
+		methods: job.methods,
+	});
 
 	return async function handleAdmin(req, res, url) {
 		if (!url.pathname.startsWith("/admin")) return false;
@@ -205,268 +140,159 @@ export function createAdminApi(deps) {
 
 		try {
 			if (path === "/admin/status" && method === "GET") {
-				const variants = [];
-				for (const runtime of runtimes) variants.push(await variantStatus(runtime));
+				const rows = [];
+				for (const provider of providers) rows.push(await providerRow(provider));
 				sendJson(res, 200, {
 					ok: true,
 					bridge: {
 						port: options.port,
 						host: options.host,
 						dataDir: options.dataDir,
-						pluginLib,
 						...(options.logFile === "" ? {} : { logFile: options.logFile }),
 						pid: process.pid,
 					},
-					variants,
-					// The second upstream. `enabled: false` when it is switched off, so the
-					// panel can tell "not configured" apart from "not working".
-					opencode: opencode === undefined || opencode === null
-						? { enabled: false }
-						: { enabled: true, ...opencode.describe(), listed: (opencode.modelsCache ?? []).length },
+					providers: rows,
 				});
 				return true;
 			}
 
-			/**
-			 * OpenCode free models: which are reachable, and a refresh that re-measures.
-			 *
-			 * Availability is cached, so the plain GET is cheap; `?refresh=1` re-probes
-			 * every model, which is what the panel's refresh button uses.
-			 */
-			if (path === "/admin/opencode" && method === "GET") {
-				if (opencode === undefined || opencode === null) {
-					sendJson(res, 200, { ok: true, enabled: false });
+			/** Every provider, with its models. `?refresh=1` re-asks each vendor. */
+			if (path === "/admin/providers" && method === "GET") {
+				const force = url.searchParams.get("refresh") === "1";
+				const rows = [];
+				for (const provider of providers) rows.push(await providerRow(provider, { force }));
+				sendJson(res, 200, { ok: true, providers: rows });
+				return true;
+			}
+
+			if (path === "/admin/sync" && method === "POST") {
+				const results = await syncNow();
+				sendJson(res, 200, {
+					ok: true,
+					results: results.map((entry) => ({
+						id: entry.id,
+						models: entry.modelCount ?? null,
+						skipped: entry.skipped ?? null,
+						error: entry.error ?? null,
+					})),
+				});
+				return true;
+			}
+
+			// ---- one provider -------------------------------------------------------
+			const one = /^\/admin\/providers\/([a-z0-9-]+)(\/[a-z-]+)?$/.exec(path);
+			if (one !== null) {
+				const provider = providerOf(one[1]);
+				const action = one[2] ?? "";
+
+				if (action === "" && method === "GET") {
+					sendJson(res, 200, { ok: true, ...(await providerRow(provider, { force: url.searchParams.get("refresh") === "1" })) });
 					return true;
 				}
-				const force = url.searchParams.get("refresh") === "1";
-				try {
-					const discovered = await opencode.discoverModels({ force });
-					const hidden = new Set(opencode.hiddenIds());
-					// An explicit re-probe must also re-declare. Probing alone only refreshes
-					// this page: the provider HanaAgent holds keeps the old roster until the
-					// declaration is pushed again, which is what `syncNow` does.
+
+				if (action === "/signin" && method === "POST") {
+					const body = await readJsonBody(req);
+					if (signIns.has(provider.id)) {
+						sendJson(res, 200, { ok: false, error: "这个供应商已经有一个登录在进行", signIn: describeSignIn(signIns.get(provider.id)) });
+						return true;
+					}
+					const methods = await provider.methods();
+					const index = Number.isInteger(body.method) ? body.method : 0;
+					const job = {
+						id: randomUUID(),
+						state: "running",
+						methods: methods.map((entry) => ({ index: entry.index, label: entry.label, type: entry.type, prompts: entry.prompts })),
+						prompts: methods[index]?.prompts ?? [],
+					};
+					signIns.set(provider.id, job);
+					// Start the flow and answer at once: the URL arrives asynchronously (a PAT
+					// method has none), and the callback may wait for a person for minutes.
+					void provider
+						.signIn(index, body.inputs ?? {}, {
+							onUrl: (url_, instructions) => {
+								job.url = url_;
+								job.instructions = typeof instructions === "string" ? instructions : null;
+							},
+						})
+						.then(() => {
+							job.state = "done";
+							signIns.delete(provider.id);
+							log(`[admin] ${provider.id} 登录完成`);
+						})
+						.catch((error) => {
+							job.state = "failed";
+							job.error = String(error?.message ?? error);
+							signIns.delete(provider.id);
+							warn(`[admin] ${provider.id} 登录失败：${job.error}`);
+						});
+					sendJson(res, 200, { ok: true, signIn: describeSignIn(job) });
+					return true;
+				}
+
+				if (action === "/signin" && method === "GET") {
+					const job = signIns.get(provider.id);
+					sendJson(res, 200, { ok: true, signIn: job === undefined ? null : describeSignIn(job), signedIn: provider.signedIn() });
+					return true;
+				}
+
+				if (action === "/signin" && method === "DELETE") {
+					const job = signIns.get(provider.id);
+					if (job !== undefined) {
+						job.state = "cancelled";
+						signIns.delete(provider.id);
+					}
+					sendJson(res, 200, { ok: true, cancelled: job !== undefined });
+					return true;
+				}
+
+				if (action === "/signout" && method === "POST") {
+					const result = provider.signOut();
+					sendJson(res, 200, { ok: true, ...result });
+					return true;
+				}
+
+				/** Show or hide models; hiding changes the declaration, so a sync follows. */
+				if (action === "/visibility" && method === "PUT") {
+					const body = await readJsonBody(req);
+					const stored = provider.setHidden(body?.hidden);
 					let sync = null;
-					if (force) {
-						try {
-							const results = await syncNow();
-							sync = results.map((entry) => ({ id: entry.id, models: entry.modelCount ?? null, skipped: entry.skipped ?? null, error: entry.error ?? null }));
-						} catch (error) {
-							sync = [{ id: "opencode", error: String(error) }];
-						}
+					try {
+						const results = await syncNow();
+						sync = results.map((entry) => ({ id: entry.id, models: entry.modelCount ?? null, skipped: entry.skipped ?? null, error: entry.error ?? null }));
+					} catch (error) {
+						sync = [{ id: provider.id, error: String(error) }];
 					}
-					sendJson(res, 200, {
-						ok: true,
-						enabled: true,
-						...opencode.describe(),
-						baseUrl: `http://${options.host}:${options.port}/opencode/v1`,
-						modelCount: discovered.filter((model) => model.working && !hidden.has(model.id)).length,
-						workingCount: discovered.filter((model) => model.working).length,
-						hiddenCount: hidden.size,
-						sync,
-						models: discovered.map((model) => ({
-							id: model.id,
-							name: model.name,
-							working: model.working,
-							hidden: hidden.has(model.id),
-							error: model.probeError ?? null,
-							context: model.context ?? null,
-							maxOutput: model.maxOutput ?? null,
-						})),
-					});
-				} catch (error) {
-					sendJson(res, 200, { ok: false, enabled: true, ...opencode.describe(), error: String(error) });
-				}
-				return true;
-			}
-
-			/**
-			 * Choose which OpenCode models HanaAgent offers.
-			 *
-			 * Like the WorkBuddy variant, hiding works by leaving the model out of the
-			 * declaration that gets pushed, so it disappears from the client's picker
-			 * rather than being merely unlisted here. The re-sync runs immediately.
-			 */
-			if (path === "/admin/opencode/visibility" && method === "PUT") {
-				if (opencode === undefined || opencode === null) {
-					sendJson(res, 200, { ok: false, enabled: false, error: "OpenCode 上游未启用" });
+					sendJson(res, 200, { ok: true, hidden: stored, sync });
 					return true;
 				}
-				let body;
-				try {
-					body = await readJsonBody(req);
-				} catch {
-					sendJson(res, 400, { ok: false, error: "请求体不是合法 JSON" });
+
+				/** Renew the credential now, rather than waiting for the timer. */
+				if (action === "/refresh" && method === "POST") {
+					const result = await provider.refreshIfDue();
+					sendJson(res, 200, { ok: true, ...result });
 					return true;
 				}
-				try {
-					const stored = opencode.setHidden(body?.hidden);
-					const results = await syncNow();
-					sendJson(res, 200, {
-						ok: true,
-						hidden: stored,
-						sync: results.map((entry) => ({ id: entry.id, models: entry.modelCount ?? null, skipped: entry.skipped ?? null, error: entry.error ?? null })),
-					});
-				} catch (error) {
-					sendJson(res, 200, { ok: false, error: String(error) });
-				}
-				return true;
-			}
 
-			if (path === "/admin/credits" && method === "GET") {
-				const id = url.searchParams.get("variant");
-				const targets = id === null ? runtimes : [runtimeOf(id)];
-				const results = [];
-				for (const runtime of targets) results.push(await creditsFor(runtime));
-				sendJson(res, 200, { ok: true, note: "每次查询都是一次真实的计费请求", credits: results });
-				return true;
-			}
-
-			if (path === "/admin/models" && method === "GET") {
-				const id = url.searchParams.get("variant");
-				const force = url.searchParams.get("refresh") === "1";
-				const targets = id === null ? runtimes : [runtimeOf(id)];
-				const result = [];
-				for (const runtime of targets) result.push({ id: runtime.id, ...(await modelRows(runtime, force)) });
-				sendJson(res, 200, { ok: true, variants: result });
-				return true;
-			}
-
-			if (path === "/admin/refresh" && method === "POST") {
-				const results = await syncNow();
-				sendJson(res, 200, { ok: true, results: results.map((entry) => ({ id: entry.id, models: entry.modelCount ?? null, skipped: entry.skipped ?? null, error: entry.error ?? null })) });
-				return true;
-			}
-
-			if (path === "/admin/visibility" && method === "GET") {
-				const runtime = runtimeOf(url.searchParams.get("variant") ?? "");
-				const store = storeFor(runtime);
-				let accountKey;
-				try {
-					accountKey = deps.accountKeyOf(await store.resolve());
-				} catch (error) {
-					sendJson(res, 200, { ok: false, error: String(error), hidden: [] });
-					return true;
-				}
-				sendJson(res, 200, { ok: true, variant: runtime.id, accountKey: accountKey ?? null, hidden: accountKey === undefined ? [] : deps.hiddenModelsFor(runtime, accountKey) });
-				return true;
-			}
-
-			if (path === "/admin/visibility" && method === "PUT") {
-				const body = await readJsonBody(req);
-				const runtime = runtimeOf(body.variant ?? "");
-				const store = storeFor(runtime);
-				const accountKey = deps.accountKeyOf(await store.resolve());
-				if (accountKey === undefined) {
-					sendJson(res, 400, { ok: false, error: "该账号没有 uid，无法按账号保存模型显隐" });
-					return true;
-				}
-				const hidden = deps.setHiddenModelsFor(runtime, accountKey, body.hidden ?? []);
-				// The declaration changes, so push it right away.
-				const results = await syncNow();
-				sendJson(res, 200, { ok: true, hidden, sync: results.map((entry) => ({ id: entry.id, models: entry.modelCount ?? null, skipped: entry.skipped ?? null })) });
-				return true;
-			}
-
-			if (path === "/admin/profiles" && method === "GET") {
-				const variants = [];
-				for (const runtime of runtimes) {
-					const profiles = [];
-					// Read each profile back so a broken one is visible before it is
-					// activated, instead of taking down a working account silently.
-					for (const profile of deps.listProfiles(runtime)) {
-						profiles.push({ ...profile, ...(await deps.describeProfile(runtime, profile.id)) });
-					}
-					variants.push({
-						id: runtime.id,
-						displayName: runtime.displayName,
-						activeProfile: runtime.activeProfileId ?? null,
-						liveAuthPath: deps.liveAuthPath(runtime) ?? null,
-						profiles,
-					});
-				}
-				sendJson(res, 200, { ok: true, variants });
-				return true;
-			}
-
-			if (path === "/admin/profiles" && method === "POST") {
-				const body = await readJsonBody(req);
-				const runtime = runtimeOf(body.variant ?? "");
-				const captured = await deps.captureProfile(runtime, body.name, body.sourcePath);
-				sendJson(res, 200, { ok: true, profile: captured });
-				return true;
-			}
-
-			if (path === "/admin/profiles/activate" && method === "POST") {
-				const body = await readJsonBody(req);
-				const runtime = runtimeOf(body.variant ?? "");
-				const active = deps.activateProfile(runtime, body.id === null || body.id === "" ? undefined : body.id);
-				const results = await syncNow();
-				sendJson(res, 200, { ok: true, activeProfile: active ?? null, sync: results.map((entry) => ({ id: entry.id, models: entry.modelCount ?? null, skipped: entry.skipped ?? null })) });
-				return true;
-			}
-
-			if (path === "/admin/profiles" && method === "DELETE") {
-				const body = await readJsonBody(req);
-				const runtime = runtimeOf(body.variant ?? "");
-				const removed = deps.deleteProfile(runtime, body.id);
-				sendJson(res, 200, { ok: true, removed, activeProfile: runtime.activeProfileId ?? null });
-				return true;
-			}
-
-			if (path === "/admin/probe" && method === "POST") {
-				const body = await readJsonBody(req);
-				if (body.confirm !== true) {
-					sendJson(res, 400, { ok: false, error: "探测会向 WorkBuddy 发送若干真实请求（可能消耗积分），需要 confirm: true" });
-					return true;
-				}
-				const runtime = runtimeOf(body.variant ?? "");
-				if (typeof body.model !== "string" || body.model === "") {
-					sendJson(res, 400, { ok: false, error: "缺少 model" });
-					return true;
-				}
-				const credential = await storeFor(runtime).resolve();
-				const region = runtime.variant?.region === "global" ? "global" : "cn";
-				const outcome = await chunk.probeModel({
-					candidates: chunk.PROBE_EFFORT_CANDIDATES,
-					region,
-					send: (effort, signal) => runtime.client.probeEffort(credential, body.model, effort, signal),
-				});
-				log(`[admin] probe ${runtime.id}/${body.model} -> ${outcome.validation} ${JSON.stringify(outcome.efforts)} (${outcome.requests} requests)`);
-				sendJson(res, 200, { ok: true, model: body.model, variant: runtime.id, ...outcome });
+				sendJson(res, 404, { ok: false, error: `no such admin route: ${method} ${path}` });
 				return true;
 			}
 
 			if (path === "/admin/log" && method === "GET") {
-				if (options.logFile === "") {
-					sendJson(res, 200, { ok: false, error: "本次启动没有 --log-file，日志只在进程输出里", lines: [] });
-					return true;
-				}
-				const limit = Math.min(Math.max(Number(url.searchParams.get("lines") ?? 200) || 200, 1), 2000);
-				try {
-					const text = readFileSync(options.logFile, "utf8");
-					sendJson(res, 200, { ok: true, file: options.logFile, lines: text.split(/\r?\n/).filter((line) => line !== "").slice(-limit) });
-				} catch (error) {
-					sendJson(res, 200, { ok: false, error: String(error), lines: [] });
-				}
+				sendJson(res, 200, { ok: true, lines: [], note: "日志在 bridge.log 里；面板读取它需要文件路径" });
 				return true;
 			}
 
 			if (path === "/admin/shutdown" && method === "POST") {
-				// The settings page stops the bridge through this instead of
-				// killing a PID it guessed: a stale pid file must never be able
-				// to take down an unrelated process.
-				sendJson(res, 200, { ok: true, message: "bridge is shutting down" });
-				log("[admin] shutdown requested by the settings page");
-				setTimeout(() => deps.shutdown(), 50).unref?.();
+				sendJson(res, 200, { ok: true });
+				if (typeof shutdown === "function") shutdown();
 				return true;
 			}
 
-			sendJson(res, 404, { error: `no such admin route: ${method} ${path}` });
+			sendJson(res, 404, { ok: false, error: `no such admin route: ${method} ${path}` });
 			return true;
 		} catch (error) {
 			const status = typeof error?.status === "number" ? error.status : 500;
-			if (status === 500) warn(`[admin] ${method} ${path} failed: ${String(error)}`);
-			sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error) });
+			sendJson(res, status, { ok: false, error: String(error?.message ?? error) });
 			return true;
 		}
 	};

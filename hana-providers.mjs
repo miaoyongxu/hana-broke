@@ -36,15 +36,28 @@ export const RATE_SEPARATOR = " · ";
 /**
  * Convert one bridge catalog entry into HanaAgent's model declaration shape.
  *
- * HanaAgent's normalizer reads `context`/`contextWindow`, `maxOutput`, `image`,
- * `efforts` and `defaultEffort`; unknown spellings in `efforts` are dropped
- * rather than rejected, and an empty list simply means "no declared levels".
+ * The field names are HanaAgent's own, read off a provider declaration the app itself
+ * wrote (`provider-plugins/claude/providers/claude.json` on this machine):
+ * `id` / `name` / `context` / `maxOutput` / `image` / `reasoning` / `customThinkingLevels`.
  *
- * `suffixOf` supplies the billing/promo suffix (`x0.06 · 夜间免费`) appended to
- * the display name. HanaAgent has no price or badge slot of its own, so the
- * name is the only place a suffix can live — the same conclusion DSH's plugin
- * reached for its picker. This is display-only: model selection is stored as
- * `{id, provider}` in `config.yaml` and nothing resolves a model by name.
+ * Two of those are easy to get wrong and fail silently:
+ *
+ * - **The reasoning flag is `reasoning`, not a list of levels.** HanaAgent decides whether
+ *   to show the thinking control from a boolean; a declaration that only carries an
+ *   effort array shows no control at all, and nothing reports why.
+ * - **The levels are `customThinkingLevels`.** An unknown key is dropped by the
+ *   normalizer rather than rejected, so `supportedEfforts` (a name from a different
+ *   tool's schema) is written and then ignored — the model appears, but its levels do not.
+ *
+ * Both are written whenever the caller knows anything about reasoning, and `image` is
+ * always written: HanaAgent merges a declaration over an older one, so a field left out
+ * keeps its previous value, which is how a model ends up advertising vision it never had.
+ *
+ * `suffixOf` supplies the billing/promo suffix (`x0.06 · 夜间免费`) appended to the
+ * display name. HanaAgent has no price or badge slot of its own, so the name is the only
+ * place a suffix can live — the same conclusion DSH's plugin reached for its picker. This
+ * is display-only: model selection is stored as `{id, provider}` in `config.yaml` and
+ * nothing resolves a model by name.
  */
 function toModelDeclaration(info, suffixOf) {
 	const id = String(info.id);
@@ -55,13 +68,16 @@ function toModelDeclaration(info, suffixOf) {
 	if (context !== undefined && context > 0) model.context = context;
 	const maxOutput = typeof info.maxTokens === "number" ? info.maxTokens : undefined;
 	if (maxOutput !== undefined && maxOutput > 0) model.maxOutput = maxOutput;
-	if (typeof info.supportsImages === "boolean") model.image = info.supportsImages;
-	if (Array.isArray(info.supportedEfforts)) {
-		const efforts = info.supportedEfforts.filter((effort) => typeof effort === "string" && KNOWN_EFFORTS.has(effort));
-		if (efforts.length > 0) model.efforts = [...new Set(efforts)];
-	}
+	// Always stated, both ways: a missing field inherits the previous declaration's value.
+	model.image = info.supportsImages === true;
+	const levels = Array.isArray(info.supportedEfforts)
+		? [...new Set(info.supportedEfforts.filter((effort) => typeof effort === "string" && KNOWN_EFFORTS.has(effort)))]
+		: [];
+	const thinking = info.reasoning === true || levels.length > 0;
+	model.reasoning = thinking;
+	if (levels.length > 0) model.customThinkingLevels = levels;
 	if (typeof info.defaultEffort === "string" && KNOWN_EFFORTS.has(info.defaultEffort)) {
-		model.defaultEffort = info.defaultEffort;
+		model.defaultThinkingLevel = info.defaultEffort;
 	}
 	return model;
 }
@@ -105,22 +121,42 @@ function writeIfChanged(path, content) {
 /**
  * Write (or refresh) one local provider plugin.
  *
+ * `authType` and `apiKey` are what make HanaAgent authenticate to this bridge
+ * instead of trusting it because the URL is loopback. HanaAgent skips the key
+ * for a loopback `base_url` when `authType` is `none` (its own
+ * `allowsMissingApiKey` short-circuits on loopback), so declaring
+ * `authType: "api-key"` plus the shared bearer is what actually makes the
+ * per-request check enforceable on the model endpoints too. With
+ * `openai-completions` that lands as `Authorization: Bearer <token>`, which is
+ * exactly what `bridge-auth.mjs` verified.
+ *
  * @param {object} options
  * @param {string} options.id provider id, e.g. `workbuddy-ai`
  * @param {string} options.displayName human-readable provider name
  * @param {string} options.baseUrl OpenAI-compatible base URL, ending in `/v1`
  * @param {object[]} options.models catalog entries from the plugin
+ * @param {string} options.apiKey the bridge bearer HanaAgent must present
  * @param {string} [options.description]
  * @param {string} [options.hanaHome]
  * @returns {{ dir: string, changed: boolean, modelCount: number }}
  */
 export function writeProviderPlugin(options) {
-	const { id, displayName, baseUrl, models } = options;
+	const { id, displayName, baseUrl, models, apiKey } = options;
 	if (!isValidProviderId(id)) throw new Error(`invalid provider id: ${String(id)}`);
+	if (typeof apiKey !== "string" || apiKey === "") {
+		throw new Error(`provider ${id} needs the bridge bearer: an empty key disables the request check`);
+	}
 	const declarations = toModelDeclarations(models, { suffixOf: options.suffixOf });
 	if (declarations.length === 0) throw new Error(`provider ${id} would be registered with no models`);
 	const home = options.hanaHome ?? resolveHanaHome();
 	const dir = join(home, PROVIDER_PLUGIN_DIR, id);
+	// A tombstoned provider is checked here rather than at each caller: every path that
+	// declares a provider goes through this function, so the guard cannot be forgotten by
+	// one of them. Writing the files anyway would look like a successful sync in the log
+	// while HanaAgent keeps the provider deleted and never shows it.
+	if (providerTombstoned(id, home) === true) {
+		return { dir, changed: false, modelCount: 0, models: [], tombstoned: true };
+	}
 	const manifest = {
 		id,
 		type: "provider-plugin",
@@ -130,9 +166,12 @@ export function writeProviderPlugin(options) {
 	const provider = {
 		id,
 		displayName,
-		authType: "none",
+		// Not "none": see the doc comment. HanaAgent reads this spelling, and
+		// `api-key` is what makes it keep the key for a loopback base URL.
+		authType: "api-key",
 		defaultBaseUrl: baseUrl,
 		defaultApi: "openai-completions",
+		apiKey,
 		models: declarations,
 		...(options.description === undefined ? {} : { description: options.description }),
 	};
@@ -164,4 +203,41 @@ export function isBridgeOwnedProvider(id, hanaHome) {
  */
 export function providerPluginExists(id, hanaHome) {
 	return existsSync(join(hanaHome ?? resolveHanaHome(), PROVIDER_PLUGIN_DIR, id));
+}
+
+/**
+ * Whether HanaAgent has recorded this provider as deleted by the user.
+ *
+ * A tombstone, not a declaration: when the user removes a provider in Settings → Models,
+ * HanaAgent appends its id to `meta.deletedProviders` in `provider-catalog.json` so the
+ * entry is not resurrected from `models.json` on the next start. Writing the
+ * `provider-plugins/` files again does **not** clear it — the id stays deleted, the
+ * provider never appears in the picker, and the bridge's own "did it register?" probe
+ * cannot tell that apart from a provider that is simply absent.
+ *
+ * That makes it a state the bridge has to read rather than guess at: re-declaring a
+ * tombstoned provider is invisible work, and the honest thing is to say so — clearing
+ * the tombstone is the user's decision, made in HanaAgent, not something a bridge should
+ * do behind their back.
+ *
+ * The catalog is plain JSON in the layouts shipped so far, but HanaAgent can seal it
+ * (`HANA-SECRET-1.AES-256-GCM.…`) with a key from the OS keychain. A sealed or unreadable
+ * catalog answers `undefined` — "unknown" — rather than `false`, so the caller does not
+ * report a tombstone it never saw.
+ *
+ * @param {string} id provider id
+ * @param {string} [hanaHome]
+ * @returns {boolean|undefined} true = tombstoned, false = not listed, undefined = unreadable
+ */
+export function providerTombstoned(id, hanaHome) {
+	try {
+		const raw = readFileSync(join(hanaHome ?? resolveHanaHome(), "provider-catalog.json"), "utf8");
+		if (raw.trimStart().startsWith("HANA-SECRET")) return undefined;
+		const catalog = JSON.parse(raw);
+		const deleted = catalog?.meta?.deletedProviders;
+		if (!Array.isArray(deleted)) return false;
+		return deleted.includes(id);
+	} catch {
+		return undefined;
+	}
 }

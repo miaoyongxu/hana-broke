@@ -2,9 +2,9 @@
   "manifestVersion": 2,
   "id": "hana-broke",
   "name": "Hana Broke",
-  "version": "0.6.0",
+  "version": "0.9.0",
   "entry": "index.js",
-  "description": "每到周末和月末总有一段难熬的日子。这个 App 把你已经登录的 WorkBuddy / WorkBuddy AI 桌面账号，连同 OpenCode 的免费模型，一起接进 HanaAgent —— 不花一分钱，先把这个月撑过去。",
+  "description": "装这一个插件，就把你已登录的订阅——WorkBuddy / WorkBuddy AI、Qoder、OpenCode Zen——全部接进 HanaAgent。供应商是来自 magpie 社区的可安装插件，不需要额外装任何程序。",
   "capabilities": [
     "app/process.spawn"
   ],
@@ -28,7 +28,7 @@
       {
         "id": "panel",
         "title": "Hana Broke",
-        "description": "控制台：启动/停止桥接、账号与积分、模型档位与显隐、OpenCode 免费模型、桥接日志。",
+        "description": "控制台：登录每个供应商、看它列出的模型、逐个显示或隐藏，以及把结果同步进 HanaAgent。",
         "route": "/panel.html",
         "cardForm": "structural",
         "realization": "page",
@@ -42,3 +42,4 @@
   "icon": "assets/icon.svg",
   "minAppVersion": "1.1.0-beta"
 }
+
