@@ -2,7 +2,7 @@
   "manifestVersion": 2,
   "id": "hana-broke",
   "name": "Hana Broke",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "entry": "index.js",
   "description": "装这一个插件，就把你已登录的订阅——WorkBuddy / WorkBuddy AI、Qoder、OpenCode Zen——全部接进 HanaAgent。供应商是来自 magpie 社区的可安装插件，不需要额外装任何程序。",
   "capabilities": [
@@ -42,5 +42,6 @@
   "icon": "assets/icon.svg",
   "minAppVersion": "1.1.0-beta"
 }
+
 
 
